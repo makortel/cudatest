@@ -8,10 +8,13 @@
 #include <tuple>
 #include <thread>
 
-constexpr size_t THREADS = 1;
-constexpr size_t TIMES = 10;
+constexpr size_t MAXTHREADS = 8;
+constexpr size_t TIMES = 2;
 constexpr size_t MAX = 1<<27; // 128Melements = 512 MB
 constexpr size_t MAXOPS = 1000000;
+
+class Data;
+void transfer(Data *data);
 
 struct Data {
   Data() {
@@ -28,39 +31,58 @@ struct Data {
     }
   }
   ~Data() {
+    cudaStreamSynchronize(stream);
     cudaFreeHost(a_h);
     cudaFree(a_d);
     cudaStreamDestroy(stream);
   }
+
+  void transferAsync() {
+    thread = std::thread{transfer, this};
+  }
+
+  double wait() {
+    thread.join();
+    return time;
+  }
+
+  std::thread thread;
   cudaStream_t stream;
+  double time;
   float *a_d;
   float *a_h;
 };
 
-double transfer(Data& data) {
+void transfer(Data *data) {
   auto start = std::chrono::high_resolution_clock::now();
 
   for(size_t i=0, j=0; i<MAXOPS; ++i) {
-    cudaMemcpyAsync(data.a_d+j, data.a_h+j, sizeof(float), cudaMemcpyDefault, data.stream);
+    cudaMemcpyAsync(data->a_d+j, data->a_h+j, sizeof(float), cudaMemcpyDefault, data->stream);
     j = (j+1)%MAX;
   }
 
   auto stop = std::chrono::high_resolution_clock::now();
-  return static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(stop-start).count())/1e6;
+  data->time = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(stop-start).count())/1e6;
 }
 
 int main() {
-  Data data;
+  std::vector<Data> threads(MAXTHREADS);
 
-  double total = 0;
-  for(size_t i=0; i<TIMES; ++i) {
-    total += transfer(data);
+  for(size_t nth=1; nth<=MAXTHREADS; ++nth) {
+    std::cout << "Number of threads " << nth << std::endl;
+    double total = 0;
+    for(size_t i=0; i<TIMES; ++i) {
+      std::cout << "Trial " << i << std::endl;
+      for(size_t j=0; j<nth; ++j) {
+        threads[j].transferAsync();
+      }
+      for(size_t j=0; j<nth; ++j) {
+        total += threads[j].wait();
+      }
+    }
+    total = total / TIMES;
+    std::cout << "Ops " << (MAXOPS*nth) << " time/trial " << total << " ops/s " << (MAXOPS*nth/total) << " us/op " << (total/(MAXOPS*nth)*1e6) << std::endl;
   }
-  total = total / TIMES;
-
-  std::cout << "Ops " << MAXOPS << " time " << total << " ops/s " << (MAXOPS/total) << " us/op " << (total/MAXOPS*1e6) << std::endl;
-
-  cudaStreamSynchronize(data.stream);
 
   return 0;
 }
