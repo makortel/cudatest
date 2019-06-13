@@ -7,14 +7,20 @@
 #include <random>
 #include <tuple>
 #include <thread>
+#include <mutex>
 
 constexpr size_t MAXTHREADS = 8;
-constexpr size_t TIMES = 2;
+constexpr size_t TIMES = 10;
 constexpr size_t MAX = 1<<27; // 128Melements = 512 MB
 constexpr size_t MAXOPS = 1000000;
 
+//#define OWN_GLOBAL_MUTEX
+//#define OWN_PER_CALL_MUTEX
+
 class Data;
 void transfer(Data *data);
+
+std::mutex cudaMutex;
 
 struct Data {
   Data() {
@@ -56,8 +62,17 @@ struct Data {
 void transfer(Data *data) {
   auto start = std::chrono::high_resolution_clock::now();
 
+#ifdef OWN_GLOBAL_MUTEX
+      std::lock_guard<std::mutex> lock{cudaMutex};
+#endif
+
   for(size_t i=0, j=0; i<MAXOPS; ++i) {
-    cudaMemcpyAsync(data->a_d+j, data->a_h+j, sizeof(float), cudaMemcpyDefault, data->stream);
+    {
+#ifdef OWN_PER_CALL_MUTEX
+      std::lock_guard<std::mutex> lock{cudaMutex};
+#endif
+      cudaMemcpyAsync(data->a_d+j, data->a_h+j, sizeof(float), cudaMemcpyDefault, data->stream);
+    }
     j = (j+1)%MAX;
   }
 
