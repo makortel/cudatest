@@ -8,6 +8,7 @@
 #include <tuple>
 #include <thread>
 #include <mutex>
+#include <cassert>
 
 constexpr size_t MAXTHREADS = 8;
 constexpr size_t TIMES = 10;
@@ -18,7 +19,7 @@ constexpr size_t MAXOPS = 1000000;
 //#define OWN_PER_CALL_MUTEX
 
 class Data;
-void transfer(Data *data);
+void transfer(Data *data, const size_t opsPerLock);
 
 std::mutex cudaMutex;
 
@@ -43,8 +44,8 @@ struct Data {
     cudaStreamDestroy(stream);
   }
 
-  void transferAsync() {
-    thread = std::thread{transfer, this};
+  void transferAsync(size_t opsPerLock) {
+    thread = std::thread{transfer, this, opsPerLock};
   }
 
   double wait() {
@@ -59,21 +60,22 @@ struct Data {
   float *a_h;
 };
 
-void transfer(Data *data) {
+void transfer(Data *data, const size_t opsPerLock) {
+  assert(MAXOPS % opsPerLock == 0);
   auto start = std::chrono::high_resolution_clock::now();
 
 #ifdef OWN_GLOBAL_MUTEX
-      std::lock_guard<std::mutex> lock{cudaMutex};
+  std::lock_guard<std::mutex> lock{cudaMutex};
 #endif
 
-  for(size_t i=0, j=0; i<MAXOPS; ++i) {
-    {
+  for(size_t i=0, j=0; i<MAXOPS/opsPerLock; ++i) {
 #ifdef OWN_PER_CALL_MUTEX
-      std::lock_guard<std::mutex> lock{cudaMutex};
+    std::lock_guard<std::mutex> lock{cudaMutex};
 #endif
+    for(size_t k=0; k<opsPerLock; ++k) {
       cudaMemcpyAsync(data->a_d+j, data->a_h+j, sizeof(float), cudaMemcpyDefault, data->stream);
+      j = (j+1)%MAX;
     }
-    j = (j+1)%MAX;
   }
 
   auto stop = std::chrono::high_resolution_clock::now();
@@ -89,7 +91,7 @@ int main() {
     for(size_t i=0; i<TIMES; ++i) {
       std::cout << "Trial " << i << std::endl;
       for(size_t j=0; j<nth; ++j) {
-        threads[j].transferAsync();
+        threads[j].transferAsync(1);
       }
       for(size_t j=0; j<nth; ++j) {
         total += threads[j].wait();
@@ -98,6 +100,24 @@ int main() {
     total = total / TIMES;
     std::cout << "Ops " << (MAXOPS*nth) << " time/trial " << total << " ops/s " << (MAXOPS*nth/total) << " us/op " << (total/(MAXOPS*nth)*1e6) << std::endl;
   }
+
+#ifdef OWN_PER_CALL_MUTEX
+  std::cout << "Ops per lock for " << MAXTHREADS << " threads " << std::endl;
+  for(size_t opsPerLock=2; opsPerLock <= 64; opsPerLock = opsPerLock << 1) {
+    double total = 0;
+    for(size_t i=0; i<TIMES; ++i) {
+      std::cout << "Trial " << i << std::endl;
+      for(auto& th: threads) {
+        th.transferAsync(opsPerLock);
+      }
+      for(auto& th: threads) {
+        total += th.wait();
+      }
+    }
+    total = total / TIMES;
+    std::cout << "Ops " << (MAXOPS*MAXTHREADS) << " per lock " << opsPerLock << " time/trial " << total << " ops/s " << (MAXOPS*MAXTHREADS/total) << " us/op " << (total/(MAXOPS*MAXTHREADS)*1e6) << std::endl;
+  }
+#endif
 
   return 0;
 }
