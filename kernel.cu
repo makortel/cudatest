@@ -30,7 +30,7 @@ std::tuple<double, double> kernel(float *a_d, float *b_d, float *c_d, cudaStream
 
   for(int i=0; i<TIMES; ++i) {
     auto start = std::chrono::high_resolution_clock::now();
-    kernel_looping<<<1, 32, 0, stream>>>(a_d, b_d, c_d, MAX*sizeof(float), loops);
+    kernel_looping<<<1, 32, 0, stream>>>(a_d, b_d, c_d, MAX, loops);
     auto stop1 = std::chrono::high_resolution_clock::now();
     cudaStreamSynchronize(stream);
     auto stop2 = std::chrono::high_resolution_clock::now();
