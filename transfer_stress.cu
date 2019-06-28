@@ -15,7 +15,7 @@ constexpr size_t TIMES = 10;
 constexpr size_t MAX = 1<<27; // 128Melements = 512 MB
 constexpr size_t MAXOPS = 1000000;
 
-//#define OWN_GLOBAL_MUTEX
+#define OWN_GLOBAL_MUTEX
 //#define OWN_PER_CALL_MUTEX
 
 class Data;
@@ -88,6 +88,7 @@ int main() {
   for(size_t nth=1; nth<=MAXTHREADS; ++nth) {
     std::cout << "Number of threads " << nth << std::endl;
     double total = 0;
+    auto start = std::chrono::high_resolution_clock::now();
     for(size_t i=0; i<TIMES; ++i) {
       std::cout << "Trial " << i << std::endl;
       for(size_t j=0; j<nth; ++j) {
@@ -97,8 +98,14 @@ int main() {
         total += threads[j].wait();
       }
     }
+    auto stop = std::chrono::high_resolution_clock::now();
     total = total / TIMES;
-    std::cout << "Ops " << (MAXOPS*nth) << " time/trial " << total << " ops/s " << (MAXOPS*nth/total) << " us/op " << (total/(MAXOPS*nth)*1e6) << std::endl;
+    total = total / nth;
+    double total2 = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(stop-start).count())/1e6;
+    total2 = total2 / TIMES;
+    std::cout << "Ops " << (MAXOPS*nth) << " time/trial (avg/threads) " << total << " ops/s " << (MAXOPS*nth/total) << " us/op " << (total/(MAXOPS*nth)*1e6)
+              << " ops/s (2) " << (MAXOPS*nth/total2)
+              << std::endl;
   }
 
 #ifdef OWN_PER_CALL_MUTEX
@@ -115,7 +122,8 @@ int main() {
       }
     }
     total = total / TIMES;
-    std::cout << "Ops " << (MAXOPS*MAXTHREADS) << " per lock " << opsPerLock << " time/trial " << total << " ops/s " << (MAXOPS*MAXTHREADS/total) << " us/op " << (total/(MAXOPS*MAXTHREADS)*1e6) << std::endl;
+    total = total / MAXTHREADS;
+    std::cout << "Ops " << (MAXOPS*MAXTHREADS) << " per lock " << opsPerLock << " time/trial (avg/threads) " << total << " ops/s " << (MAXOPS*MAXTHREADS/total) << " us/op " << (total/(MAXOPS*MAXTHREADS)*1e6) << std::endl;
   }
 #endif
 
