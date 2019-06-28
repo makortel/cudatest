@@ -9,18 +9,22 @@
 #include <thread>
 #include <mutex>
 #include <cassert>
+#include <atomic>
 
 constexpr size_t MAXTHREADS = 8;
 constexpr size_t TIMES = 10;
 constexpr size_t MAX = 1<<27; // 128Melements = 512 MB
 constexpr size_t MAXOPS = 1000000;
 
-#define OWN_GLOBAL_MUTEX
+//#define OWN_GLOBAL_MUTEX
 //#define OWN_PER_CALL_MUTEX
 
 class Data;
 void transfer(Data *data, const size_t opsPerLock);
 
+std::atomic<int> countdownToStartTimer;
+std::atomic<bool> startProcessing;
+decltype(std::chrono::high_resolution_clock::now()) globalStart;
 std::mutex cudaMutex;
 
 struct Data {
@@ -62,7 +66,13 @@ struct Data {
 
 void transfer(Data *data, const size_t opsPerLock) {
   assert(MAXOPS % opsPerLock == 0);
-  auto start = std::chrono::high_resolution_clock::now();
+  if(--countdownToStartTimer == 0) {
+    globalStart = std::chrono::high_resolution_clock::now();
+    startProcessing.store(true);
+  }
+  else {
+    while(not startProcessing.load()) {}
+  }
 
 #ifdef OWN_GLOBAL_MUTEX
   std::lock_guard<std::mutex> lock{cudaMutex};
@@ -79,7 +89,7 @@ void transfer(Data *data, const size_t opsPerLock) {
   }
 
   auto stop = std::chrono::high_resolution_clock::now();
-  data->time = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(stop-start).count())/1e6;
+  data->time = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(stop-globalStart).count())/1e6;
 }
 
 int main() {
@@ -88,23 +98,25 @@ int main() {
   for(size_t nth=1; nth<=MAXTHREADS; ++nth) {
     std::cout << "Number of threads " << nth << std::endl;
     double total = 0;
-    auto start = std::chrono::high_resolution_clock::now();
+    double totalPerThread = 0;
     for(size_t i=0; i<TIMES; ++i) {
       std::cout << "Trial " << i << std::endl;
+      countdownToStartTimer.store(nth);
+      startProcessing.store(false);
       for(size_t j=0; j<nth; ++j) {
         threads[j].transferAsync(1);
       }
       for(size_t j=0; j<nth; ++j) {
-        total += threads[j].wait();
+        totalPerThread += threads[j].wait();
       }
+      auto stop = std::chrono::high_resolution_clock::now();
+      total += static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(stop-globalStart).count())/1e6;
     }
-    auto stop = std::chrono::high_resolution_clock::now();
     total = total / TIMES;
-    total = total / nth;
-    double total2 = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(stop-start).count())/1e6;
-    total2 = total2 / TIMES;
-    std::cout << "Ops " << (MAXOPS*nth) << " time/trial (avg/threads) " << total << " ops/s " << (MAXOPS*nth/total) << " us/op " << (total/(MAXOPS*nth)*1e6)
-              << " ops/s (2) " << (MAXOPS*nth/total2)
+    totalPerThread = totalPerThread / TIMES;
+    totalPerThread = total / nth;
+    std::cout << "Ops " << (MAXOPS*nth) << " time/trial " << total << " ops/s " << (MAXOPS*nth/total) << " us/op " << (total/(MAXOPS*nth)*1e6)
+              << " avg time/thread " << totalPerThread
               << std::endl;
   }
 
@@ -112,18 +124,26 @@ int main() {
   std::cout << "Ops per lock for " << MAXTHREADS << " threads " << std::endl;
   for(size_t opsPerLock=2; opsPerLock <= 64; opsPerLock = opsPerLock << 1) {
     double total = 0;
+    double totalPerThread = 0;
     for(size_t i=0; i<TIMES; ++i) {
       std::cout << "Trial " << i << std::endl;
+      countdownToStartTimer.store(MAXTHREADS);
+      startProcessing.store(false);
       for(auto& th: threads) {
         th.transferAsync(opsPerLock);
       }
       for(auto& th: threads) {
-        total += th.wait();
+        totalPerThread += th.wait();
       }
+      auto stop = std::chrono::high_resolution_clock::now();
+      total += static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(stop-globalStart).count())/1e6;
     }
     total = total / TIMES;
-    total = total / MAXTHREADS;
-    std::cout << "Ops " << (MAXOPS*MAXTHREADS) << " per lock " << opsPerLock << " time/trial (avg/threads) " << total << " ops/s " << (MAXOPS*MAXTHREADS/total) << " us/op " << (total/(MAXOPS*MAXTHREADS)*1e6) << std::endl;
+    totalPerThread = totalPerThread / TIMES;
+    totalPerThread = totalPerThread / MAXTHREADS;
+    std::cout << "Ops " << (MAXOPS*MAXTHREADS) << " per lock " << opsPerLock << " time/trial " << total << " ops/s " << (MAXOPS*MAXTHREADS/total) << " us/op " << (total/(MAXOPS*MAXTHREADS)*1e6)
+              << " avg time/thread " << totalPerThread
+              << std::endl;
   }
 #endif
 
