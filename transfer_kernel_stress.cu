@@ -9,18 +9,24 @@
 #include <thread>
 #include <mutex>
 #include <cassert>
+#include <atomic>
 
 constexpr size_t MAXTHREADS = 8;
 constexpr size_t TIMES = 10;
+//constexpr size_t LOOPS = 1;
 constexpr size_t LOOPS = 1024;
 constexpr size_t CUDATHREADS = 32; // 1 warp
 constexpr size_t SIZE = LOOPS*CUDATHREADS;
 //constexpr size_t SIZE = 1<<27; // 128Melements = 512 MB
+//constexpr size_t MAXCHUNKS = 200000;
 constexpr size_t MAXCHUNKS = 25000;
 
 class Data;
 void work(Data *data, size_t loops);
 
+std::atomic<int> countdownToStartTimer;
+std::atomic<bool> startProcessing;
+decltype(std::chrono::high_resolution_clock::now()) globalStart;
 std::mutex cudaMutex;
 
 struct Data {
@@ -73,25 +79,31 @@ __global__ void kernel_looping(float *a, unsigned int size, size_t loops) {
 }
 
 void work(Data *data, size_t loops) {
-  double launch_time = 0;
+  if(--countdownToStartTimer == 0) {
+    globalStart = std::chrono::high_resolution_clock::now();
+    startProcessing.store(true);
+  }
+  else {
+    while(not startProcessing.load()) {}
+  }
 
-  auto start = std::chrono::high_resolution_clock::now();
+  double launch_time = 0;
 
   for(size_t i=0; i<MAXCHUNKS; ++i) {
     auto starti = std::chrono::high_resolution_clock::now();
-    //{
-      std::lock_guard<std::mutex> lock{cudaMutex};
+    {
+      //std::lock_guard<std::mutex> lock{cudaMutex};
       cudaMemcpyAsync(data->a_d, data->a_h, SIZE*sizeof(float), cudaMemcpyDefault, data->stream);
       kernel_looping<<<1, CUDATHREADS, 0, data->stream>>>(data->a_d, SIZE, loops);
       cudaMemcpyAsync(data->a_h, data->a_d, SIZE*sizeof(float), cudaMemcpyDefault, data->stream);
-      //}
+    }
     auto stopi = std::chrono::high_resolution_clock::now();
     launch_time += static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(stopi-starti).count())/1e6;
     cudaStreamSynchronize(data->stream);
   }
 
   auto stop = std::chrono::high_resolution_clock::now();
-  data->time = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(stop-start).count())/1e6;
+  data->time = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(stop-globalStart).count())/1e6;
   data->launch_time = launch_time;
 }
 
@@ -101,25 +113,33 @@ int main() {
   for(size_t nth=1; nth<=MAXTHREADS; ++nth) {
     std::cout << "Number of threads " << nth << std::endl;
     double total = 0;
-    double total_launch = 0;
+    double totalPerThread = 0;
+    double totalLaunch = 0;
     for(size_t i=0; i<TIMES; ++i) {
       std::cout << "Trial " << i << std::endl;
+      countdownToStartTimer.store(nth);
+      startProcessing.store(false);
       for(size_t j=0; j<nth; ++j) {
         threads[j].workAsync(LOOPS);
       }
       for(size_t j=0; j<nth; ++j) {
         auto times = threads[j].wait();
-        total += std::get<0>(times);
-        total_launch += std::get<1>(times);
+        totalPerThread += std::get<0>(times);
+        totalLaunch += std::get<1>(times);
       }
+      auto stop = std::chrono::high_resolution_clock::now();
+      total += static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(stop-globalStart).count())/1e6;
     }
     total = total / TIMES;
-    total_launch = total_launch / TIMES;
+    totalPerThread = totalPerThread / TIMES;
+    totalPerThread = totalPerThread / nth;
+    totalLaunch = totalLaunch / TIMES;
     std::cout << "Chunks " << (MAXCHUNKS*nth)
               << " time/trial " << total
               << " chunks/s " << (MAXCHUNKS*nth/total)
               << " us/chunk " << (total/(MAXCHUNKS*nth)*1e6)
-              << " launch us/chunk " << (total_launch/(MAXCHUNKS*nth)*1e6)
+              << " avg time/thread " << totalPerThread
+              << " launch us/chunk " << (totalLaunch/(MAXCHUNKS*nth)*1e6)
               << std::endl;
   }
 
