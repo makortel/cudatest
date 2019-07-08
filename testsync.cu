@@ -218,6 +218,66 @@ void testCudaMallocManagedFree(float *dev_points[NUM_STREAM], float *host_points
   cudaDeviceSynchronize();
 }
 
+void testCudaHostRegister(float *dev_points[NUM_STREAM], float *host_points[NUM_STREAM], cudaStream_t streams[NUM_STREAM]) {
+  std::vector<float *> tmp;
+  tmp.reserve(4*NUM_STREAM);
+  for(int i=0; i<4*NUM_STREAM; ++i) {
+    tmp.push_back(reinterpret_cast<float *>(malloc(1024*sizeof(float))));
+  }
+
+
+  for( int j = 0; j < 4; ++j) {
+    for (size_t i = 0; i < NUM_STREAM; ++i) {
+      cudaMemcpyAsync(dev_points[i], host_points[i], 
+                      ARRAY_SIZE * sizeof(float), 
+                      cudaMemcpyHostToDevice, streams[i]);
+      kernel_looping<<<1, 16, 0, streams[i]>>>(dev_points[i], ARRAY_SIZE);
+      cudaMemcpyAsync(host_points[i], dev_points[i], 
+                      ARRAY_SIZE * sizeof(float), 
+                      cudaMemcpyDeviceToHost, streams[i]);
+      float *ptr = tmp[j*NUM_STREAM + i];
+      cudaHostRegister(ptr, 1024*sizeof(float), cudaHostRegisterDefault);
+    }
+  }
+
+  cudaDeviceSynchronize();
+  for(auto ptr: tmp) {
+    cudaHostUnregister(ptr);
+  }
+
+  for(auto ptr: tmp) {
+    free(ptr);
+  }
+}
+
+void testCudaHostRegisterUnregister(float *dev_points[NUM_STREAM], float *host_points[NUM_STREAM], cudaStream_t streams[NUM_STREAM]) {
+  std::vector<float *> tmp;
+  tmp.reserve(4*NUM_STREAM);
+  for(int i=0; i<4*NUM_STREAM; ++i) {
+    tmp.push_back(reinterpret_cast<float *>(malloc(1024*sizeof(float))));
+  }
+
+
+  for( int j = 0; j < 4; ++j) {
+    for (size_t i = 0; i < NUM_STREAM; ++i) {
+      cudaMemcpyAsync(dev_points[i], host_points[i], 
+                      ARRAY_SIZE * sizeof(float), 
+                      cudaMemcpyHostToDevice, streams[i]);
+      kernel_looping<<<1, 16, 0, streams[i]>>>(dev_points[i], ARRAY_SIZE);
+      cudaMemcpyAsync(host_points[i], dev_points[i], 
+                      ARRAY_SIZE * sizeof(float), 
+                      cudaMemcpyDeviceToHost, streams[i]);
+      float *ptr = tmp[j*NUM_STREAM + i];
+      cudaHostRegister(ptr, 1024*sizeof(float), cudaHostRegisterDefault);
+      cudaHostUnregister(ptr);
+    }
+  }
+
+  cudaDeviceSynchronize();
+  for(auto ptr: tmp) {
+    free(ptr);
+  }
+}
 
 int main() {
   float *dev_points[NUM_STREAM];
@@ -291,6 +351,14 @@ int main() {
   testCudaMallocManagedFree(dev_points, host_points, streams);
   nvtxDomainRangeEnd(handle, id);
 
+
+  id = nvtxDomainRangeStart(handle, "cudaHostRegister");
+  testCudaHostRegister(dev_points, host_points, streams);
+  nvtxDomainRangeEnd(handle, id);
+
+  id = nvtxDomainRangeStart(handle, "cudaHostRegisterUnregister");
+  testCudaHostRegisterUnregister(dev_points, host_points, streams);
+  nvtxDomainRangeEnd(handle, id);
 
 
   nvtxDomainDestroy(handle);
