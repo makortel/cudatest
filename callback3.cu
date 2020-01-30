@@ -1,8 +1,11 @@
 // -*- c++ -*-
 // nvcc -std=c++14 -o callback2 callback2.cu
 
+// as callback2 but use custom synchronization with the callback instead of cudaDeviceSynchronize
+
 #include <iostream>
 #include <cstdio>
+#include <atomic>
 
 __global__ void kernel()
 {
@@ -18,14 +21,21 @@ __global__ void kernel()
    }
 }
 
-void CUDART_CB cb(cudaStream_t stream, cudaError_t status, void *data) {}
+constexpr size_t NSTREAMS = 7;
+
+std::atomic<bool> canContinue[NSTREAMS];
+
+void CUDART_CB cb(cudaStream_t stream, cudaError_t status, void *data) {
+  canContinue[reinterpret_cast<size_t>(data)].store(true);
+}
 
 int main(int argc, char* argv[])
 {
-   cudaStream_t streams[8];
+   cudaStream_t streams[NSTREAMS];
 
-   for (int i = 0; i < 8; ++i) {
+   for (int i = 0; i < NSTREAMS; ++i) {
        cudaStreamCreate(&streams[i]);
+       canContinue[i].store(false);
    }
 
    cudaDeviceSynchronize();
@@ -34,17 +44,24 @@ int main(int argc, char* argv[])
    int numBlocks = 20;
 
    for (int j = 0; j < 4; ++j) {
-       for (size_t i = 0; i < 8; ++i) {
+       for (size_t i = 0; i < NSTREAMS; ++i) {
            kernel<<<numBlocks, numThreads, 0, streams[i]>>>();
            kernel<<<numBlocks, numThreads, 0, streams[i]>>>();
            if (j == 2)
                cudaStreamAddCallback(streams[i], cb, (void*) i, 0);
        }
+       if(j== 2) {
+         for(size_t i=0; i<NSTREAMS; ++i) {
+           while(not canContinue[i].load()) {}
+         }
+       }
+       else {
+         //cudaDeviceSynchronize();
+       }
    }
-
    cudaDeviceSynchronize();
 
-   for (int i = 0; i < 8; ++i) {
+   for (int i = 0; i < NSTREAMS; ++i) {
        cudaStreamDestroy(streams[i]);
    }
 
