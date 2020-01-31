@@ -10,8 +10,9 @@
 #include <mutex>
 #include <cassert>
 
+constexpr size_t STREAMS = 64;
 //constexpr size_t STREAMS = 256;
-constexpr size_t STREAMS = 50000;
+//constexpr size_t STREAMS = 50000;
 constexpr size_t CUDATHREADS = 32; // 1 warp
 constexpr size_t ELEMENTS = STREAMS*CUDATHREADS;
 constexpr size_t LOOPS = 1000000;

@@ -15,19 +15,22 @@ __global__ void kernel()
    int stride = gridDim.x * blockDim.x;
    volatile float x = 0;
 
-   for (int j = idx; j < 1024*1024*16; j += stride) {
+   for (int j = idx; j < 1024*1024*64; j += stride) {
        #pragma unroll
-       for (int i = 0; i < 128; ++i) {
+       for (int i = 0; i < 512; ++i) {
            x += float(i)*float(i);
        }
    }
 }
 
 constexpr size_t NSTREAMS = 32;
-constexpr size_t NTHREADS = 4;
+constexpr size_t NTHREADS = 1;
 constexpr size_t STREAMS_PER_THREAD = NSTREAMS/NTHREADS;
 constexpr int numThreads = 256;
 constexpr int numBlocks = 20;
+
+//#define CREATE_THREADS
+//#define ADD_CALLBACK
 
 std::atomic<bool> canStart;
 std::atomic<bool> canContinue[NSTREAMS];
@@ -50,21 +53,28 @@ int main(int argc, char* argv[])
 
    cudaDeviceSynchronize();
 
-   std::vector<std::thread> threads(NTHREADS);
    waiting.store(NSTREAMS);
+#ifdef CREATE_THREADS
+   std::vector<std::thread> threads(NTHREADS);
    for (size_t i = 0; i < NTHREADS; ++i) {
      threads[i] = std::thread{[ith=i, &streams]() {
          while(not canStart.load()) {}
+#else
+         const size_t ith = 0;
+#endif // CREATE_THREADS
 
          for (int j = 0; j < 4; ++j) {
            for(size_t k = 0; k<STREAMS_PER_THREAD; ++k) {
              const size_t ist = ith*STREAMS_PER_THREAD+k;
              kernel<<<numBlocks, numThreads, 0, streams[ist]>>>();
-             kernel<<<numBlocks, numThreads, 0, streams[ist]>>>();
+             //kernel<<<numBlocks, numThreads, 0, streams[ist]>>>();
+#ifdef ADD_CALLBACK
              if (j == 2) {
                cudaStreamAddCallback(streams[ist], cb, (void*) ist, 0);
              }
+#endif // ADD_CALLBACK
            }
+#ifdef ADD_CALLBACK
            if(j == 2) {
              for(size_t k = 0; k<STREAMS_PER_THREAD; ++k) {
                const size_t ist = ith*STREAMS_PER_THREAD+k;
@@ -72,7 +82,14 @@ int main(int argc, char* argv[])
                while(not waiting.load() == 0) {}
              }
            }
+#endif // ADD_CALLBACK
          }
+
+         for(size_t k = 0; k<STREAMS_PER_THREAD; ++k) {
+           const size_t ist = ith*STREAMS_PER_THREAD+k;
+           cudaStreamSynchronize(streams[ist]);
+         }
+#ifdef CREATE_THREADS
        }};
    }
    canStart.store(true);
@@ -80,6 +97,7 @@ int main(int argc, char* argv[])
    for(auto& th: threads) {
      th.join();
    }
+#endif // CREATE_THREADS
 
    cudaDeviceSynchronize();
 
