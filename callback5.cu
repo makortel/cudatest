@@ -24,13 +24,16 @@ __global__ void kernel()
 }
 
 constexpr size_t NSTREAMS = 32;
-constexpr size_t NTHREADS = 1;
+constexpr size_t NTHREADS = 32;
 constexpr size_t STREAMS_PER_THREAD = NSTREAMS/NTHREADS;
-constexpr int numThreads = 256;
-constexpr int numBlocks = 20;
+constexpr size_t EVENTS = 2;
+constexpr size_t KERNELS = 1;
+constexpr int numThreads = 32;
+constexpr int numBlocks = 1;
 
-//#define CREATE_THREADS
+#define CREATE_THREADS
 //#define ADD_CALLBACK
+#define ADD_SYNC
 
 std::atomic<bool> canStart;
 std::atomic<bool> canContinue[NSTREAMS];
@@ -63,26 +66,24 @@ int main(int argc, char* argv[])
          const size_t ith = 0;
 #endif // CREATE_THREADS
 
-         for (int j = 0; j < 4; ++j) {
+         for (int iev = 0; iev < EVENTS; ++iev) {
            for(size_t k = 0; k<STREAMS_PER_THREAD; ++k) {
              const size_t ist = ith*STREAMS_PER_THREAD+k;
-             kernel<<<numBlocks, numThreads, 0, streams[ist]>>>();
-             //kernel<<<numBlocks, numThreads, 0, streams[ist]>>>();
-#ifdef ADD_CALLBACK
-             if (j == 2) {
-               cudaStreamAddCallback(streams[ist], cb, (void*) ist, 0);
+             for(size_t ik = 0; ik < KERNELS; ++ik) {
+               kernel<<<numBlocks, numThreads, 0, streams[ist]>>>();
              }
+#ifdef ADD_CALLBACK
+             cudaStreamAddCallback(streams[ist], cb, (void*) ist, 0);
 #endif // ADD_CALLBACK
            }
+           for(size_t k = 0; k<STREAMS_PER_THREAD; ++k) {
+             const size_t ist = ith*STREAMS_PER_THREAD+k;
 #ifdef ADD_CALLBACK
-           if(j == 2) {
-             for(size_t k = 0; k<STREAMS_PER_THREAD; ++k) {
-               const size_t ist = ith*STREAMS_PER_THREAD+k;
-               while(not canContinue[ist].load()) {}
-               while(not waiting.load() == 0) {}
-             }
+             while(not canContinue[ist].load()) {}
+#elif defined ADD_SYNC
+             cudaStreamSynchronize(streams[ist]);
+#endif // ADD_CALLBACK || ADD_SYNC
            }
-#endif // ADD_CALLBACK
          }
 
          for(size_t k = 0; k<STREAMS_PER_THREAD; ++k) {
